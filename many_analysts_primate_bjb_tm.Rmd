@@ -1,0 +1,67 @@
+---
+title: "ManyAnalysts"
+author: "Brendan Barrett and Tracy Montgomery"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Load data
+library(rethinking)
+d_demo <- read.csv("Data/demographics.csv")
+d_discp <- read.csv("Data/displacements.csv")
+d_groom <- read.csv("Data/grooming.csv")
+d_ot <- read.csv("Data/observation_times.csv")
+str(d_demo)
+str(d_discp)
+str(d_groom)
+str(d_ot)
+sort(unique(d_demo$ID)) == sort(unique(d_groom$Sender)) # true all represented
+sort(unique(d_groom$Sender)) == sort(unique(d_groom$Receiver)) # true all represented
+sort(unique(d_groom$Receiver)) ==  sort(unique(d_demo$ID)) # true all represented
+str(d_groom)
+d_groom$r_index <- as.integer(as.factor(d_groom$Receiver))
+d_groom$s_index <- as.integer(as.factor(d_groom$Sender))
+dens(d_groom$Duration_seconds)
+range(d_groom$Duration_seconds)
+
+```
+
+
+```{r g}
+## Load data
+library(janitor)
+d_demo <- clean_names(read.csv("Data/demographics.csv"))
+d_disp <- clean_names(read.csv("Data/displacements.csv"))
+d_groom <- clean_names(read.csv("Data/grooming.csv"))
+d_ot <- clean_names(read.csv("Data/observation_times.csv"))
+str(d_demo)
+str(d_discp)
+str(d_groom)
+str(d_ot)
+```
+
+
+```{r}
+## Load data
+d_demo <- read.csv("Data/demographics.csv")
+d_discp <- read.csv("Data/displacements.csv")
+d_groom <- read.csv("Data/grooming.csv")
+d_ot <- read.csv("Data/observation_times.csv")
+str(d_demo)
+str(d_discp)
+str(d_groom)
+str(d_ot)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
