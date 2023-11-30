@@ -5,32 +5,14 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=TRUE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-## Load data
 library(rethinking)
-d_demo <- read.csv("Data/demographics.csv")
-d_discp <- read.csv("Data/displacements.csv")
-d_groom <- read.csv("Data/grooming.csv")
-d_ot <- read.csv("Data/observation_times.csv")
-str(d_demo)
-str(d_discp)
-str(d_groom)
-str(d_ot)
-sort(unique(d_demo$ID)) == sort(unique(d_groom$Sender)) # true all represented
-sort(unique(d_groom$Sender)) == sort(unique(d_groom$Receiver)) # true all represented
-sort(unique(d_groom$Receiver)) ==  sort(unique(d_demo$ID)) # true all represented
-str(d_groom)
-d_groom$r_index <- as.integer(as.factor(d_groom$Receiver))
-d_groom$s_index <- as.integer(as.factor(d_groom$Sender))
-dens(d_groom$Duration_seconds)
-range(d_groom$Duration_seconds)
-
+library(janitor)
 ```
 
-
-```{r g}
+# Open or Read the four files
+```{r load}
 ## Load data
 library(janitor)
 d_demo <- clean_names(read.csv("Data/demographics.csv"))
@@ -38,30 +20,93 @@ d_disp <- clean_names(read.csv("Data/displacements.csv"))
 d_groom <- clean_names(read.csv("Data/grooming.csv"))
 d_ot <- clean_names(read.csv("Data/observation_times.csv"))
 str(d_demo)
-str(d_discp)
+str(d_disp)
 str(d_groom)
 str(d_ot)
 ```
+# Calculate dominance ranks for all individuals
 
+# Prepare grooming interactions
+
+For the social relations model I will build, all individuals will need the same indexing variable to fit in stan. I will now see that all individuals in the `demography.csv` are represented in all of the grooming columns
+```{r}
+# Lets check that all the individuals in the demography files are represented in the sender and reciever component of the grooming data
+sort(unique(d_demo$id)) == sort(unique(d_groom$sender)) # true all represented
+sort(unique(d_groom$sender)) == sort(unique(d_groom$receiver)) # true all represented
+sort(unique(d_groom$receiver)) ==  sort(unique(d_demo$id)) # true all represented
+sort(unique(d_demo$id)) == sort(unique(d_groom$focal)) # true all represented
+
+```
+This looks good so we can assign indexing variables to these datasets at least.
+```{r}
+d_demo$id_index <- as.integer(as.factor(d_demo$id))
+d_groom$r_index <- as.integer(as.factor(d_groom$receiver))
+d_groom$s_index <- as.integer(as.factor(d_groom$sender))
+d_groom$f_index <- as.integer(as.factor(d_groom$focal))
+```
+
+Now lets inspect the duration seconds column to see what we be working with.
+
+```{r, echo=TRUE}
+hist(d_groom$duration_seconds) # dass even
+is.integer(d_groom$duration_second) # all integers
+# for(i in 1:max(d_groom$f_index)){
+#   dens( d_groom$duration_seconds[d_groom$s_index==i] , col="salmon", xlim=range(d_groom$duration_seconds) )
+#   dens( d_groom$duration_seconds[d_groom$r_index==i] , col="mediumpurple3" , add=TRUE)
+# }
+```
+The data looks to be all integers and all greater that zero. 
+Since we are estimating rates, a log-link function that accounts for different exposures seems good.
+I will choose a gamma distribution as it is the natural distribution for times.
+A Poisson would likely give the same answer, but time is continuous, so we will go with that even though the data is collected in integers (it is technically measurement error, but we shall ignore that).
+
+Another thing I want to inspect is if there are duplicate rows.
+Sometimes people will duplicate an observation row to account for two individuals belonging to the dyad (As grooming is a dyadic behavior). This is wrong as it leads to overconfident or misleading estimates, and folks often eff up the varying effects structure.
 
 ```{r}
-## Load data
-d_demo <- read.csv("Data/demographics.csv")
-d_discp <- read.csv("Data/displacements.csv")
-d_groom <- read.csv("Data/grooming.csv")
-d_ot <- read.csv("Data/observation_times.csv")
-str(d_demo)
-str(d_discp)
-str(d_groom)
+table(d_groom$duration_seconds) # this has odd numbers so observations not duplicated
+```
+Above has odd numbers of durations observed so observations not duplicated.
+Huzzah!
+
+### Exposure and observation effort
+The `grooming.csv` file is data from focal follows where one individual is in a follow.
+I do not know how long each focal follow was from this dataset.
+But I will make the assumption that they are all the same length, so the exposure is the same.
+Since I do not know is a follow is 10 minutes or 10 seconds ds I cannot make predictions on a real scale.
+And `{r} d_do$observation_time` does nor have units, but I will see if it is number of follows?
+
+```{r}
 str(d_ot)
+sort(unique(d_ot$focal))==sort(unique(d_demo$id)) # all true so represented
+d_ot2 <- as.data.frame(table(d_groom$focal ) )
+sort(d_ot2$Freq)==sort(d_ot$observation_time)
+sum(d_ot$observation_time) # this is close, but not equal to the 2800 hours, so i will assume observation time is number of hours
+sum(d_ot2$Freq)
 ```
+The summed about of focal observation time is `r sum(d_ot$observation_time)`, which is close to the 2800 hours in the prompt so I will assume this contains focal hours and there is a teeny mistake.
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+I am going to make a unique dyad variable now.
+```{r}
+d_groom$dyad <- apply(d_groom[,2:3], 1, function(s) paste0(sort(s), collapse='_'))
+sort(unique(d_groom$dyad))
+d_groom$dyad_index <- as.integer(as.factor(d_groom$dyad))
+table(d_groom$dyad)
 ```
+From the table, we can see that there are multiple observations of some dyads engaging in grooming.
+Lets look at a particularly groomy dyad.
+```{r}
+d_groom[d_groom$dyad="Andrew_Kristen"]
+```
+I am somewhat concerned that at `x=1328` and `x=2003`, we see at the same timestamp two grooming events for the same sender that exceed a minute. 
+I think this is a simulation or data management error, but this would give me concern if I saw this in a dataset.
+# Prepare outcome and predictor variables
+# Analysis - please perform all model checks you feel are appropriate
+Barreling forward.
+```{r intercepts only}
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```
+# Visualise or describe impact of Sex
+# Visualise or describe impact of Age
+# Visualise or describe impact of Rank
