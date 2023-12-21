@@ -9,6 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(rethinking)
 library(janitor)
+library(aniDom)
 ```
 
 # Open or Read the four files
@@ -24,7 +25,78 @@ str(d_disp)
 str(d_groom)
 str(d_ot)
 ```
+
 # Calculate dominance ranks for all individuals
+
+First, I will do some basic checks that will allow me to fix typos in names and other common data entry errors.
+
+```{r}
+# check that all ids in demography are unique
+anyDuplicated(d_demo$id)  #none duplicated
+
+# check that all the individuals in the displacements file are in the demography file
+unique(d_disp$sender %in% d_demo$id)   #all senders in demography
+unique(d_disp$receiver %in% d_demo$id)   #all receivers in demography
+
+# check that displacements recorded correctly (one of the individuals was the subject of the focal follow)
+unique(d_disp$focal == d_disp$sender | d_disp$focal == d_disp$receiver)   #all displacements involve a focal animal
+```
+
+Because I don't know exactly how the data were collected, I won't check for overlapping FASes or other common errors in behavioral data.
+
+Next, I will check the displacements data set for the criteria required to accurately calculate a dominance hierarchy.
+
+```{r}
+# do all the individuals interact at least once? 
+sort(unique(c(d_disp$sender, d_disp$receiver))) == sort(unique(d_demo$id))  #all demography individuals in displacements
+
+# is anyone interacting with themselves?
+unique(d_disp$sender == d_disp$receiver) #all senders different from receivers
+
+# estimate sampling effort (ratio of interactions to individuals)
+round(nrow(d_disp)/length(unique(c(d_disp$sender, d_disp$receiver))))  #36 (should be at least 10-20)
+
+# estimate sparseness of dataset - not done b/c no reason to expect that simulated data would be too sparse
+```
+
+For a longitudinal primate study, I would calculate dominance ranks that are sensitive to time and sequences of events. However, since this study is only 1 year long with no prior information on this species (and thus no reason to expect that dominance ranks would be changing within a single year), I will generate a static dominance hierarchy using all of the data collected.
+
+I will use the randomized Elo-rating to calculate hierarchies for this species following Sánchez-Tójar et al. 2017 (doi: 10.1111/1365-2656.12776). This method is valid across a variety of levels of hierarchy steepness, and as a bonus it allows us to estimate hierarchy uncertainty. 
+
+```{r}
+# rank based on randomized Elo-rating
+rand_scores <- elo_scores(winners = d_disp$sender,
+                          losers = d_disp$receiver,
+                          identities = d_demo$id,
+                          K = 100, #following Neumann et al. 2011
+                          randomise = TRUE,
+                          n.rands = 1000)
+rand_scores <- rand_scores[order(rowMeans(rand_scores), decreasing = T),] #order based on final score
+
+# plot ranks (not scores)
+plot_ranks(ranks = rand_scores, plot.CIs = T)
+
+# calculate means and sds of scores
+scores_summ <- data.frame(id = row.names(rand_scores), mean_score = rowMeans(rand_scores),
+                    sd_score = matrixStats::rowSds(rand_scores))
+```
+
+I have provided raw scores, rather than ranks, as it is more conveniently distributed for modeling than ordinal ranks. I made rand_scores, a matrix (raw scores x 1000 randomizations) and scores_summ, a data frame (mean and SD of the randomizations).
+
+Next I will estimate the uncertainty of the hierarchy.
+
+```{r}
+# uncertainty/steepness based on Elo-rating repeatability
+rept <- estimate_uncertainty_by_repeatability(winners = d_disp$sender,
+                                              losers = d_disp$receiver,
+                                              identities = d_demo$id,
+                                              init.score = 0,
+                                              n.rands = 1000)
+round(rept,3)    #0.971
+rm(rept)   #clean environment
+```
+
+This measure of steepness/uncertainty is independent of both group size and the ratio of interactions to individuals. The value obtained is 0.971, which indicates that the hierarchy of this group of primates is very steep, and therefore, the estimate of ranks is highly certain.
 
 # Prepare grooming interactions
 
