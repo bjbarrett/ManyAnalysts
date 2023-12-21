@@ -97,7 +97,7 @@ table(d_groom$dyad)
 From the table, we can see that there are multiple observations of some dyads engaging in grooming.
 Lets look at a particularly groomy dyad.
 ```{r}
-d_groom[d_groom$dyad="Andrew_Kristen"]
+d_groom[d_groom$dyad=="Andrew_Kristen",]
 ```
 I am somewhat concerned that at `x=1328` and `x=2003`, we see at the same timestamp two grooming events for the same sender that exceed a minute. 
 I think this is a simulation or data management error, but this would give me concern if I saw this in a dataset.
