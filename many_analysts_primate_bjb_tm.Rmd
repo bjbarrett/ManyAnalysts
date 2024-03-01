@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rethinking)
 library(janitor)
 library(aniDom)
+library(gtools)
 ```
 
 # Open or Read the four files
@@ -42,7 +43,7 @@ unique(d_disp$receiver %in% d_demo$id)   #all receivers in demography
 unique(d_disp$focal == d_disp$sender | d_disp$focal == d_disp$receiver)   #all displacements involve a focal animal
 ```
 
-Because I don't know exactly how the data were collected, I won't check for overlapping FASes or other common errors in behavioral data.
+Because I don't know exactly how the data were collected, I won't check for overlapping cases or other common errors in behavioral data.
 
 Next, I will check the displacements data set for the criteria required to accurately calculate a dominance hierarchy.
 
@@ -81,7 +82,7 @@ scores_summ <- data.frame(id = row.names(rand_scores), mean_score = rowMeans(ran
                     sd_score = matrixStats::rowSds(rand_scores))
 ```
 
-I have provided raw scores, rather than ranks, as it is more conveniently distributed for modeling than ordinal ranks. I made rand_scores, a matrix (raw scores x 1000 randomizations) and scores_summ, a data frame (mean and SD of the randomizations).
+I have provided raw scores, rather than ranks, as it is more conveniently distributed for modeling than ordinal ranks. I made `rand_scores`, a matrix (raw scores x 1000 randomizations) and `scores_summ`, a data frame (mean and SD of the randomizations).
 
 Next I will estimate the uncertainty of the hierarchy.
 
@@ -92,16 +93,16 @@ rept <- estimate_uncertainty_by_repeatability(winners = d_disp$sender,
                                               identities = d_demo$id,
                                               init.score = 0,
                                               n.rands = 1000)
-round(rept,3)    #0.971
-rm(rept)   #clean environment
+#squanch <- round(rept,3)    #0.971
 ```
 
-This measure of steepness/uncertainty is independent of both group size and the ratio of interactions to individuals. The value obtained is 0.971, which indicates that the hierarchy of this group of primates is very steep, and therefore, the estimate of ranks is highly certain.
+This measure of steepness/uncertainty is independent of both group size and the ratio of interactions to individuals. The value obtained is `r round(rept,3)`, which indicates that the hierarchy of this group of primates is very steep, and therefore, the estimate of ranks is highly certain.
 
 # Prepare grooming interactions
 
-For the social relations model I will build, all individuals will need the same indexing variable to fit in stan. I will now see that all individuals in the `demography.csv` are represented in all of the grooming columns
+For the social relations model I will build, all individuals will need the same indexing variable to fit in `stan`. I will now see that all individuals in the `demography.csv` are represented in all of the grooming columns
 ```{r}
+rm(rept)   #clean environment
 # Lets check that all the individuals in the demography files are represented in the sender and reciever component of the grooming data
 sort(unique(d_demo$id)) == sort(unique(d_groom$sender)) # true all represented
 sort(unique(d_groom$sender)) == sort(unique(d_groom$receiver)) # true all represented
@@ -128,25 +129,27 @@ is.integer(d_groom$duration_second) # all integers
 # }
 ```
 The data looks to be all integers and all greater that zero. 
+However, this data only shows instances where grooming occured-- there is the posibility that in some dyads grooming doid not occure (i.w. we recorded a 0).
 Since we are estimating rates, a log-link function that accounts for different exposures seems good.
-I will choose a gamma distribution as it is the natural distribution for times.
-A Poisson would likely give the same answer, but time is continuous, so we will go with that even though the data is collected in integers (it is technically measurement error, but we shall ignore that).
+A gamma distribution would be a good choice, as it is the natural distribution for times.
+But we *could* use a A Poisson which would likely give the same answer, but time is continuous, so we will go with that even though the data is collected in integers (it is technically measurement error, but we shall ignore that).
+Depending on frequency of zeros, a zero-augmented gamma or zero-inflated poisson might be a good model to fit.
 
 Another thing I want to inspect is if there are duplicate rows.
-Sometimes people will duplicate an observation row to account for two individuals belonging to the dyad (As grooming is a dyadic behavior). This is wrong as it leads to overconfident or misleading estimates, and folks often eff up the varying effects structure.
+Sometimes people will duplicate an observation row to account for two individuals belonging to the dyad in grooming data (As grooming is a dyadic behavior). 
+This is wrong as it leads to overconfident or misleading estimates, and folks often eff up the varying effects structure.
 
 ```{r}
 table(d_groom$duration_seconds) # this has odd numbers so observations not duplicated
 ```
-Above has odd numbers of durations observed so observations not duplicated.
-Huzzah!
+Above has some odd numbers of durations observed so observations not duplicated.
 
 ### Exposure and observation effort
 The `grooming.csv` file is data from focal follows where one individual is in a follow.
 I do not know how long each focal follow was from this dataset.
 But I will make the assumption that they are all the same length, so the exposure is the same.
-Since I do not know is a follow is 10 minutes or 10 seconds ds I cannot make predictions on a real scale.
-And `{r} d_do$observation_time` does nor have units, but I will see if it is number of follows?
+Since I do not know is a follow is 10 minutes or 10 seconds, I cannot make predictions on a real scale.
+And `d_do$observation_time` does noy have units, but I will see if it is number of follows?
 
 ```{r}
 str(d_ot)
@@ -156,9 +159,23 @@ sort(d_ot2$Freq)==sort(d_ot$observation_time)
 sum(d_ot$observation_time) # this is close, but not equal to the 2800 hours, so i will assume observation time is number of hours
 sum(d_ot2$Freq)
 ```
-The summed about of focal observation time is `r sum(d_ot$observation_time)`, which is close to the 2800 hours in the prompt so I will assume this contains focal hours and there is a teeny mistake.
+The summed about of focal observation time is `r sum(d_ot$observation_time)`, which is close to the 2800 hours in the prompt so I will assume this contains focal hours.
 
+A choice we have to make is what exposure we will choose. 
+If I were to collect this data, I would have the exposure estimated per focal follow, and analyze data on that scale.
+I know not if they are the same length
+I would have formatted the data as grooming observations within a focal follow, and also noted if no grooming occured during a follow.
+From this finest grained approach one can look at the dynamics or rank and grooming rates over time.
 
+Back to exposure--- we know the cumulative time that an individual was observed in hours.
+We have a record of the duration bout of each grooming bout, but we cannot link that to a focal follow.
+So, what we can say is given a known sampling rate of individuals in focal follows, we can estimate an exposure *per individual* or *per dyad*.
+The individual exposure will have us estimate directional grooming rates of a given dyad within the cumulative time that one of the dyad members was followed.
+The dyadic approach implies that given how long a dyad was sampled (i.e. summed observation time of individial $i$ and individual $j$), what are the estimated directional grooming rates of a given dyad.
+Both will give us the same answer, just the individual approach has double the rows.
+Since grooming rates is a dyadic property, we will take that approach. 
+
+### Assigning dyad ID
 I am going to make a unique dyad variable now.
 ```{r}
 d_groom$dyad <- apply(d_groom[,2:3], 1, function(s) paste0(sort(s), collapse='_'))
@@ -172,11 +189,186 @@ Lets look at a particularly groomy dyad.
 d_groom[d_groom$dyad=="Andrew_Kristen",]
 ```
 I am somewhat concerned that at `x=1328` and `x=2003`, we see at the same timestamp two grooming events for the same sender that exceed a minute. 
-I think this is a simulation or data management error, but this would give me concern if I saw this in a dataset.
+I think this is a simulation or data management error, but this would give me concern if I saw this in a dataset about the quality.
+
+Can add 0 per observation, to account for no simultaneous grooming..
+However prompt posits no simultaneous grooming, so we can compress this.
+Outcome is also in seconds, whereas exposure is in hours (i think, so we will have to do some math to get our prediction scales good with the exposure, which will also affect our distributional choice).
+
+### Aggregating the data frame into analyzable form
+```{r}
+
+#set up blanck vectors
+d_groom$groomAB <- d_groom$groomBA <- d_groom$A_id <- d_groom$B_id <- d_groom$A <- d_groom$B <- d_groom$exposure_dyad_hours <-   NA 
+
+for(i in 1:nrow(d_groom)){
+  d_groom$A_id[i] <- min( c(d_groom$s_index[i] , d_groom$r_index[i] ) ) #index of individual A in dyad (alphabetical first)
+  d_groom$B_id[i] <- max( c(d_groom$s_index[i] , d_groom$r_index[i] ) ) #index of individual B in dyad (alphabetical first)
+  d_groom$A[i] <- min( c(d_groom$sender[i] , d_groom$receiver[i] ) ) #individual A in dyad (alphabetical first)
+  d_groom$B[i] <- max( c(d_groom$sender[i] , d_groom$receiver[i] ) ) #individual B in dyad (alphabetical first)
+  d_groom$groomAB[i] <-  sum(d_groom$duration_seconds[d_groom$dyad_index==d_groom$dyad_index[i] & d_groom$s_index==d_groom$A_id[i]]) #how much A grooms B, in a particular dyad across all observations
+  d_groom$groomBA[i] <-  sum(d_groom$duration_seconds[d_groom$dyad_index==d_groom$dyad_index[i] & d_groom$r_index==d_groom$A_id[i]]) #how much B grooms A, in a particular dyad across all observations
+}
+
+
+                                                 
+# for( i in 1:max(d_groom$dyad_index))){
+#   d_groom$aid <- sort(unique(d_groom$f_index[d_groom$dyad_index==1]))[1]
+#   bid <- sort(unique(d_groom$f_index[d_groom$dyad_index==1]))[1]
+#   d_groom$groomAB[i] <- sum(d_groom$duration_seconds[d_groom$dyad_index==i d_groom$s_index==d_groom$f_index[i] 
+#                                       & d_groom$s_index==d_groom$s_index[i] & d_groom$dyad_index==d_groom$dyad_index[i]]) 
+#   d_groom$focal_receive_groom[i] <- sum(d_groom$duration_seconds[d_groom$r_index==d_groom$f_index[i] 
+#                                       & d_groom$r_index==d_groom$r_index[i] & d_groom$dyad_index==d_groom$dyad_index[i]])
+# }
+
+d_groom2 <- d_groom[,c("dyad" , "dyad_index" , "A_id" , "B_id" , "A" , "B" , "groomAB" , "groomBA")] #subset the columns i will use
+
+d_groom3 <-d_groom2[!duplicated(d_groom2), ] # drop da dupes, individual dataframe
+## now lets add exposure
+d_groom3$exposure_dyad_hour <- NA
+# add up the observation time for each dyad in hours (sum of focal follows for each dyad member)
+for (i in 1:nrow(d_groom3)){
+  d_groom3$exposure_dyad_hour[i] <- sum(d_ot$observation_time[which(d_ot$focal==d_groom3$A[i])] , d_ot$observation_time[which(d_ot$focal==d_groom3$B[i])])
+}
+str(d_groom3)
+
+#lots of zeros, so i'll likely have to do a ZIP
+
+#lets add sex, age, and rank of dyad mambers
+d_groom3$sex_A <- d_groom3$sex_B <- d_groom3$age_A <- d_groom3$age_B <- 
+str(d_demo)
+
+```
 # Prepare outcome and predictor variables
+I put all this stuff in a list
+```{r list}
+datalist <- list(
+  N_dyads = length(unique(d_groom3$dyad_index)) ,
+  N_i = length(unique(d_demo$id)) ,
+  groomAB = d_groom3$groomAB,
+  groomBA = d_groom3$groomBA,
+  A_id = d_groom3$A_id,
+  B_id = d_groom3$B_id,
+  dyad_id = d_groom3$dyad_index,
+  exposure_dyad_hour = d_groom3$exposure_dyad_hour ,
+  exposure_dyad_day = d_groom3$exposure_dyad_hour/24
+)
+#sort(unique(datalist$groomAB))
+```
 # Analysis - please perform all model checks you feel are appropriate
-Barreling forward.
+
+Barreling forward, I will first do an intercepts only version of the social relations model to see how much heterogeneity is explained by dyadic or individual level variation, using the `ulam` function in the `rethinking` package in `R`
+```{r , eval=FALSE}
+m0 <- ulam(
+    alist(
+        groomAB ~ poisson( lambda_AB ),
+        groomBA ~ poisson( lambda_BA ),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] ,
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] ,
+        a ~ normal(1,2),
+        ## gr matrix of varying effects
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+        transpars> matrix[N_dyads,2]:d <-
+                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 8 ),
+        sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=4 , iter=2000 , control=list(adapt_delta=0.99 , max_treedepth=14))
+
+```
+
 ```{r intercepts only}
+precis(m0 , depth=3 , pars=c("sigma_gr" , "sigma_d" , "Rho_gr" , "Rho_d"))
+
+#lets add exposure
+dens(exp(rnorm(n=10000 ,1,2)))
+m0exp <- ulam(
+    alist(
+        groomAB ~ poisson( lambda_AB ),
+        groomBA ~ poisson( lambda_BA ),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_day),
+        a ~ normal(1,2),
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+        transpars> matrix[N_dyads,2]:d <-
+                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+        sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=4 , iter=2000 )
+
+```
+Lets look at model ouput of individuals:
+
+```{r precis int only}
+precis(m0exp , depth=3 , pars=c( "a" ,"sigma_gr" , "Rho_gr","sigma_d" ,"Rho_d"))
+post <- extract.samples( m0exp)
+dens(exp(post$a) , xlab="posterior of minutes groomed/hour")
+abline( v=median(exp(post$a)) )
+```
+So $\alpha$ imples a mean grooming rate of `r median(exp(post$a)` minutes/hour.
+
+```{r int only grafs}
+g <- sapply( 1:60 , function(i) post$a + post$gr[,i,1] )
+r <- sapply( 1:60 , function(i) post$a + post$gr[,i,2] )
+Eg_mu <- apply( exp(g) , 2 , median )
+Er_mu <- apply( exp(r) , 2 , median )
+#g_mu <- apply( g , 2 , median )
+#Er_mu <- apply( r , 2 , median )
+plot( NULL , xlim=c(0,50) , ylim=c(0,50) , xlab="generalized giving grooming" ,
+    ylab="generalized receiving grooming" , lwd=1.5 )
+abline(a=0,b=1,lty=2)
+
+# ellipses
+library(ellipse)
+for ( i in 1:60 ) {
+    Sigma <- cov( cbind( g[,i] , r[,i] ) )
+    Mu <- c( mean(g[,i]) , mean(r[,i]) )
+    for ( l in c(0.5) ) {
+        el <- ellipse( Sigma , centre=Mu , level=l )
+        lines( exp(el) , col=col.alpha("black",0.5) )
+    }
+}
+# household means
+points( Eg_mu , Er_mu , pch=21 , bg="white" , lwd=1.5 )
+```
+```{r intercepts only}
+precis(m0 , depth=3 , pars=c("sigma_gr" , "sigma_d" , "Rho_gr" , "Rho_d"))
+
+#lets add exposure and make it a ZiPoisson
+dens(exp(rnorm(n=10000 ,1,2)))
+m0exp <- ulam(
+    alist(
+        groomAB ~ poisson( lambda_AB ),
+        groomBA ~ poisson( lambda_BA ),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_day),
+        a ~ normal(1,2),
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+        transpars> matrix[N_dyads,2]:d <-
+                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+        sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=4 , iter=2000 )
 
 ```
 # Visualise or describe impact of Sex
