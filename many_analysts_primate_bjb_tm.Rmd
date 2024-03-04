@@ -11,6 +11,7 @@ library(rethinking)
 library(janitor)
 library(aniDom)
 library(gtools)
+set_ulam_cmdstan(TRUE)
 ```
 
 # Open or Read the four files
@@ -254,6 +255,9 @@ datalist <- list(
   exposure_dyad_day = d_groom3$exposure_dyad_hour/24
 )
 #sort(unique(datalist$groomAB))
+hist(c(d_groom3$groomAB,d_groom3$groomBA) , breaks=100)
+table(c(d_groom3$groomAB,d_groom3$groomBA))
+nrow(d_groom3)
 ```
 # Analysis - please perform all model checks you feel are appropriate
 
@@ -284,8 +288,6 @@ m0 <- ulam(
 ```
 
 ```{r intercepts only}
-precis(m0 , depth=3 , pars=c("sigma_gr" , "sigma_d" , "Rho_gr" , "Rho_d"))
-
 #lets add exposure
 dens(exp(rnorm(n=10000 ,1,2)))
 m0exp <- ulam(
@@ -294,7 +296,7 @@ m0exp <- ulam(
         groomBA ~ poisson( lambda_BA ),
         log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_day),
         log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_day),
-        a ~ normal(1,2),
+        a ~ normal(1,1.2),
         vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
         Rho_gr ~ lkj_corr(4),
         sigma_gr ~ exponential(1),
@@ -307,7 +309,7 @@ m0exp <- ulam(
        ## compute correlation matrix for dyads
         gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=4 , iter=2000 )
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan=TRUE )
 
 ```
 Lets look at model ouput of individuals:
@@ -315,19 +317,19 @@ Lets look at model ouput of individuals:
 ```{r precis int only}
 precis(m0exp , depth=3 , pars=c( "a" ,"sigma_gr" , "Rho_gr","sigma_d" ,"Rho_d"))
 post <- extract.samples( m0exp)
-dens(exp(post$a) , xlab="posterior of minutes groomed/hour")
+dens(exp(post$a) , xlab="posterior of seconds groomed/day")
 abline( v=median(exp(post$a)) )
 ```
-So $\alpha$ imples a mean grooming rate of `r median(exp(post$a)` minutes/hour.
+So $\alpha$ implies a median grooming rate of `r median(exp(post$a)` minutes/hour. We also see more varaiation in dyads then we do in individuals, and more variation in receiving grooming(`sigma_gr[2]`) thatn giving grooming (`sigma_gr[1]`).
 
-```{r int only grafs}
+```{r int only grafs link}
 g <- sapply( 1:60 , function(i) post$a + post$gr[,i,1] )
 r <- sapply( 1:60 , function(i) post$a + post$gr[,i,2] )
 Eg_mu <- apply( exp(g) , 2 , median )
 Er_mu <- apply( exp(r) , 2 , median )
 #g_mu <- apply( g , 2 , median )
 #Er_mu <- apply( r , 2 , median )
-plot( NULL , xlim=c(0,50) , ylim=c(0,50) , xlab="generalized giving grooming" ,
+plot( NULL , xlim=c(0,16) , ylim=c(0,16) , xlab="generalized giving grooming" ,
     ylab="generalized receiving grooming" , lwd=1.5 )
 abline(a=0,b=1,lty=2)
 
@@ -344,32 +346,227 @@ for ( i in 1:60 ) {
 # household means
 points( Eg_mu , Er_mu , pch=21 , bg="white" , lwd=1.5 )
 ```
+```{r int only grafs}
+g <- sapply( 1:60 , function(i) post$a + post$gr[,i,1] )
+r <- sapply( 1:60 , function(i) post$a + post$gr[,i,2] )
+g_mu <- apply( g , 2 , median )
+r_mu <- apply( r , 2 , median )
+plot( NULL , xlim=c(-15,15) , ylim=c(-15,15) , xlab="generalized giving grooming (log-link scale)" ,
+    ylab="generalized receiving grooming (log-link scale)" , lwd=1.5 )
+abline(a=0,b=1,lty=2)
+
+# ellipses
+library(ellipse)
+for ( i in 1:60 ) {
+    Sigma <- cov( cbind( g[,i] , r[,i] ) )
+    Mu <- c( mean(g[,i]) , mean(r[,i]) )
+    for ( l in c(0.5) ) {
+        el <- ellipse( Sigma , centre=Mu , level=l )
+        lines( el , col=col.alpha("black",0.5) )
+    }
+}
+# household means
+points( g_mu , r_mu , pch=21 , bg="white" , lwd=1.5 )
+```
+The above graphs visualize the strong negative correlations between giving grooming and receiving grooming, ignoring dyad specific effects..
+Individuals that receive alot of grooming, give less on average. This is reflected by the high values of $\rho$ in the varaicne covariance matrix.
+
+Now we can look ay dyad specific effects, ignoring generalized tendency of individuals to give and receive.
+Within dyads
+```{r}
+dy1 <- apply( post$d[,,1] , 2 , median )
+dy2 <- apply( post$d[,,2] , 2 , median )
+plot( dy1 , dy2 , xlim=c(-9,9) , ylim=c(-9,9) , xlab="primate B in dyad" , ylab="primate B in dyad")
+```
+There is a reliable negative correlation within dyads, after accounting for generalzed tendecies of individual to give and recieve grooming. IF one individual in a dyad grooms alot, the other likely grooms a little. Dyads are unbalanced. Their is strong separation in varying effects which likely means something is unmodeled (or fitting issues) that structures the data.
 ```{r intercepts only}
-precis(m0 , depth=3 , pars=c("sigma_gr" , "sigma_d" , "Rho_gr" , "Rho_d"))
 
 #lets add exposure and make it a ZiPoisson
-dens(exp(rnorm(n=10000 ,1,2)))
-m0exp <- ulam(
+m0expZI <- ulam(
     alist(
-        groomAB ~ poisson( lambda_AB ),
-        groomBA ~ poisson( lambda_BA ),
-        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_day),
-        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_day),
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + log(exposure_dyad_hour),
+        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + log(exposure_dyad_hour),
+        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
+        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
         a ~ normal(1,2),
+        a_z ~ normal(0,1),
+      vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+      Rho_gr ~ lkj_corr(4),
+      sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+       transpars> matrix[N_dyads,2]:d <-
+             compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+       matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+       sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+      gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
+
+precis(m0expZI , pars=c("a", "a_z"))
+precis(m0expZI , depth=2 , pars=c( "sigma_d" ))
+precis(m0expZI , pars=c( "sigma_d" , "sigma_gr" ) , depth=3)
+```
+
+```{r}
+# <!--m0expZIa <- ulam(
+#     alist(
+#         groomAB ~ dzipois( pAB, lambda_AB ),
+#         groomBA ~ dzipois( pBA , lambda_BA ),
+#         logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d_z[dyad_id,1] + log(exposure_dyad_hour),
+#         logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d_b[dyad_id,2] + log(exposure_dyad_hour),
+#         log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
+#         log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
+#         a ~ normal(1,2),
+#         a_z ~ normal(0,1),
+#       vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+#       Rho_gr ~ lkj_corr(4),
+#       sigma_gr ~ exponential(1),
+#        ## dyad effects choleskyfied
+#        transpars> matrix[N_dyads,2]:d <-
+#              compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+#        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+#        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+#        sigma_dz ~ exponential(1),
+#        sigma_d ~ exponential(1),
+#        ## compute correlation matrix for dyads
+#       gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+# 
+#     ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )-->
+
+precis(m0expZI , pars=c("a", "a_z" , "sigma_d" ,"sigma_dz" , "sigma_gr" , "Rho_d" , "Rho_gr") , depth=3)
+
+
+
+
+m0expZI1 <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2]  +  log(exposure_dyad_hour),
+        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2]  + log(exposure_dyad_hour),
+        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4]  + log(exposure_dyad_hour),
+        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4]  + log(exposure_dyad_hour),
+        a ~ normal(1,2),
+        a_z ~ normal(0,1)
+      vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+      Rho_gr ~ lkj_corr(4),
+      sigma_gr ~ exponential(1)
+       ## dyad effects choleskyfied
+       # transpars> matrix[N_dyads,4]:d <-
+        #        compose_noncentered( sigma_d , L_Rho_d , zd ),
+      #  matrix[4,N_dyads]:zd ~ normal( 0 , 1 ),
+       # cholesky_factor_corr[4]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+        #sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        #gq> matrix[4,4]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
+
+
+m0expZI2 <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        logit(pAB) <- a_z + gr_z[A_id,1] + gr_z[B_id,2] + d_z[dyad_id,1]  + log(exposure_dyad_hour),
+        logit(pBA) <- a_z + gr_z[B_id,1] + gr_z[A_id,2] + d_z[dyad_id,2]  + log(exposure_dyad_hour),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1]  + log(exposure_dyad_hour),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]  + log(exposure_dyad_hour),
+        
+        a ~ normal(1,2),
+        a_z ~ normal(0,1),
+        
+        vector[2]:gr_z[N_i] ~ multi_normal(0,Rho_gr_z,sigma_gr_z),
+        Rho_gr_z ~ lkj_corr(4),
+        sigma_gr_z ~ exponential(1),
+        
         vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
         Rho_gr ~ lkj_corr(4),
         sigma_gr ~ exponential(1),
+        
        ## dyad effects choleskyfied
-        transpars> matrix[N_dyads,2]:d <-
-                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
-        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
-        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
-        sigma_d ~ exponential(1),
+       transpars> matrix[N_dyads,2]:d_z <-
+             compose_noncentered( rep_vector(sigma_d_z,2) , L_Rho_d_z , zd_z ),
+       matrix[2,N_dyads]:zd_z ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d_z ~ lkj_corr_cholesky( 4 ),
+       sigma_d_z ~ exponential(1),
+
+      transpars> matrix[N_dyads,2]:d <-
+             compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+       matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 8 ),
+       sigma_d ~ exponential(1),
        ## compute correlation matrix for dyads
-        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+      gq> matrix[2,2]:Rho_d_z <<- Chol_to_Corr( L_Rho_d_z ),
+      gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+      
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
 
-    ), data=datalist , chains=4 , cores=4 , iter=2000 )
+precis(m0expZI2 , pars=c("Rho_d") , depth=3)
+summary(m0expZI2  )
+# append_row(sigma_d, sigma_g)
 
+m0expZI4 <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d_z[dyad_id] + log(exposure_dyad_hour),
+        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d_z[dyad_id] + log(exposure_dyad_hour),
+        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
+        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
+        a ~ normal(1,2),
+        a_z ~ normal(0,1),
+      d_z[N_dyads] ~ normal(0,sigma_dz),
+      vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+      Rho_gr ~ lkj_corr(4),
+      sigma_gr ~ exponential(1),
+      sigma_dz ~ exponential(1),
+       ## dyad effects choleskyfied
+      #combo_sigma <- append_row( rep_vector(sigma_d[1],2) , rep_vector(sigma_d[2],2)) ,
+       transpars> matrix[N_dyads,2]:d <-
+             compose_noncentered( sigma_gr , L_Rho_d , zd ),
+       matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+       sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+      gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  ) 
+
+m0expZI4 <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_hour),
+        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_hour),
+        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,3]  + log(exposure_dyad_hour),
+        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,4]  + log(exposure_dyad_hour),
+        a ~ normal(1,2),
+        a_z ~ normal(0,1),
+        vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+      combo_sigma <- to_vector( sigma_dB , sigma_dB , sigma_dG , sigma_dG) ,
+      vector[4]:d[N_i] ~ multi_normal(0,Rho_d, combo_sigma),
+      Rho_d ~ lkj_corr(4),
+      sigma_dB ~ exponential(1),
+      sigma_dG ~ exponential(1)
+      #  transpars> matrix[N_dyads,4]:d <-
+      #        compose_noncentered( rep_row_vector(sigma_d,4), L_Rho_d , zd ),
+      #  matrix[4,N_dyads]:zd ~ normal( 0 , 1 ),
+      #  cholesky_factor_corr[4]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+      #  sigma_d ~ exponential(1),
+      #  ## compute correlation matrix for dyads
+      # gq> matrix[4,4]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  ) 
+
+post <- extract.samples(m0expZI4)
+precis(m0expZI4 , pars=c("Rho_d" , "sigma") , depth=3)
 ```
 # Visualise or describe impact of Sex
 # Visualise or describe impact of Age
