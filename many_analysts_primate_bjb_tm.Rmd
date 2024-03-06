@@ -103,7 +103,7 @@ This measure of steepness/uncertainty is independent of both group size and the 
 
 For the social relations model I will build, all individuals will need the same indexing variable to fit in `stan`. I will now see that all individuals in the `demography.csv` are represented in all of the grooming columns
 ```{r}
-rm(rept)   #clean environment
+#rm(rept)   #clean environment
 # Lets check that all the individuals in the demography files are represented in the sender and reciever component of the grooming data
 sort(unique(d_demo$id)) == sort(unique(d_groom$sender)) # true all represented
 sort(unique(d_groom$sender)) == sort(unique(d_groom$receiver)) # true all represented
@@ -130,10 +130,12 @@ is.integer(d_groom$duration_second) # all integers
 # }
 ```
 The data looks to be all integers and all greater that zero. 
-However, this data only shows instances where grooming occured-- there is the posibility that in some dyads grooming doid not occure (i.w. we recorded a 0).
+However, this data only shows instances where grooming occurred.
+There is the possibility that in some dyads grooming did not occure (i.e. we recorded a 0).
+We can get this by counting how much grooming did not occur based off of the observation time of the dyad.
 Since we are estimating rates, a log-link function that accounts for different exposures seems good.
 A gamma distribution would be a good choice, as it is the natural distribution for times.
-But we *could* use a A Poisson which would likely give the same answer, but time is continuous, so we will go with that even though the data is collected in integers (it is technically measurement error, but we shall ignore that).
+But we *could* use a a Poisson which would likely give the same answer, but time is continuous, so we will go with that even though the data is collected in integers (it is technically measurement error, but we shall ignore that).
 Depending on frequency of zeros, a zero-augmented gamma or zero-inflated poisson might be a good model to fit.
 
 Another thing I want to inspect is if there are duplicate rows.
@@ -156,16 +158,15 @@ And `d_do$observation_time` does noy have units, but I will see if it is number 
 str(d_ot)
 sort(unique(d_ot$focal))==sort(unique(d_demo$id)) # all true so represented
 d_ot2 <- as.data.frame(table(d_groom$focal ) )
-sort(d_ot2$Freq)==sort(d_ot$observation_time)
+#sort(d_ot2$Freq)==sort(d_ot$observation_time)
 sum(d_ot$observation_time) # this is close, but not equal to the 2800 hours, so i will assume observation time is number of hours
-sum(d_ot2$Freq)
+#sum(d_ot2$Freq)
 ```
 The summed about of focal observation time is `r sum(d_ot$observation_time)`, which is close to the 2800 hours in the prompt so I will assume this contains focal hours.
 
 A choice we have to make is what exposure we will choose. 
 If I were to collect this data, I would have the exposure estimated per focal follow, and analyze data on that scale.
-I know not if they are the same length
-I would have formatted the data as grooming observations within a focal follow, and also noted if no grooming occured during a follow.
+I would have formatted the data as grooming observations within a focal follow, and also noted if no grooming occurred during a follow.
 From this finest grained approach one can look at the dynamics or rank and grooming rates over time.
 
 Back to exposure--- we know the cumulative time that an individual was observed in hours.
@@ -236,9 +237,16 @@ str(d_groom3)
 #lots of zeros, so i'll likely have to do a ZIP
 
 #lets add sex, age, and rank of dyad mambers
-d_groom3$sex_A <- d_groom3$sex_B <- d_groom3$age_A <- d_groom3$age_B <- 
-str(d_demo)
-
+d_groom3$sex_A <- d_groom3$sex_B <- d_groom3$age_A <- d_groom3$age_B <- NA
+d_demo$age_std <- standardize(d_demo$age)
+for (i in 1:nrow(d_groom3)){
+  d_groom3$sex_A[i] <- d_demo$sex[which(d_demo$id==d_groom3$A[i])]
+  d_groom3$sex_B[i] <- d_demo$sex[which(d_demo$id==d_groom3$B[i])]
+  d_groom3$age_std_A[i] <- d_demo$age_std[which(d_demo$id==d_groom3$A[i])]
+  d_groom3$age_std_B[i] <- d_demo$age_std[which(d_demo$id==d_groom3$B[i])]
+}
+  d_groom3$sex_A_index <- as.integer(as.factor(d_groom3$sex_A))
+  d_groom3$sex_B_index <- as.integer(as.factor(d_groom3$sex_B))
 ```
 # Prepare outcome and predictor variables
 I put all this stuff in a list
@@ -252,7 +260,13 @@ datalist <- list(
   B_id = d_groom3$B_id,
   dyad_id = d_groom3$dyad_index,
   exposure_dyad_hour = d_groom3$exposure_dyad_hour ,
-  exposure_dyad_day = d_groom3$exposure_dyad_hour/24
+  exposure_dyad_day = d_groom3$exposure_dyad_hour/24,
+  sex_A_index = d_groom3$sex_A_index,
+  sex_B_index = d_groom3$sex_B_index,
+  age_std_A = d_groom3$age_std_A,
+  age_std_B = d_groom3$age_std_B,
+  groomAB_minperday=d_groom3$groomAB/(d_groom3$exposure_dyad_hour/24) ,
+  groomBA_minperday=d_groom3$groomBA/(d_groom3$exposure_dyad_hour/24)
 )
 #sort(unique(datalist$groomAB))
 hist(c(d_groom3$groomAB,d_groom3$groomBA) , breaks=100)
@@ -260,6 +274,7 @@ table(c(d_groom3$groomAB,d_groom3$groomBA))
 nrow(d_groom3)
 ```
 # Analysis - please perform all model checks you feel are appropriate
+## Poisson Intercepts only social relations model.
 
 Barreling forward, I will first do an intercepts only version of the social relations model to see how much heterogeneity is explained by dyadic or individual level variation, using the `ulam` function in the `rethinking` package in `R`
 ```{r , eval=FALSE}
@@ -286,17 +301,18 @@ m0 <- ulam(
     ), data=datalist , chains=4 , cores=4 , iter=2000 , control=list(adapt_delta=0.99 , max_treedepth=14))
 
 ```
-
+Below is code for a Poisson version of the model which has treedepth issues
 ```{r intercepts only}
 #lets add exposure
-dens(exp(rnorm(n=10000 ,1,2)))
+dens(exp(rnorm(n=30000 ,3,1.1)))
+
 m0exp <- ulam(
     alist(
         groomAB ~ poisson( lambda_AB ),
         groomBA ~ poisson( lambda_BA ),
         log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_day),
         log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_day),
-        a ~ normal(1,1.2),
+        a ~ normal(3,1.1),
         vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
         Rho_gr ~ lkj_corr(4),
         sigma_gr ~ exponential(1),
@@ -309,7 +325,7 @@ m0exp <- ulam(
        ## compute correlation matrix for dyads
         gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan=TRUE )
+    ), data=datalist , chains=8 , cores=8 , iter=2000 , cmdstan=TRUE  )
 
 ```
 Lets look at model ouput of individuals:
@@ -320,7 +336,7 @@ post <- extract.samples( m0exp)
 dens(exp(post$a) , xlab="posterior of seconds groomed/day")
 abline( v=median(exp(post$a)) )
 ```
-So $\alpha$ implies a median grooming rate of `r median(exp(post$a)` minutes/hour. We also see more varaiation in dyads then we do in individuals, and more variation in receiving grooming(`sigma_gr[2]`) thatn giving grooming (`sigma_gr[1]`).
+So $\alpha$ implies a median grooming rate of `r median(exp(post$a)` minutes/hour. We also see more variation in dyads then we do in individuals, and more variation in receiving grooming(`sigma_gr[2]`) thatn giving grooming (`sigma_gr[1]`).
 
 ```{r int only grafs link}
 g <- sapply( 1:60 , function(i) post$a + post$gr[,i,1] )
@@ -378,20 +394,21 @@ dy1 <- apply( post$d[,,1] , 2 , median )
 dy2 <- apply( post$d[,,2] , 2 , median )
 plot( dy1 , dy2 , xlim=c(-9,9) , ylim=c(-9,9) , xlab="primate B in dyad" , ylab="primate B in dyad")
 ```
-There is a reliable negative correlation within dyads, after accounting for generalzed tendecies of individual to give and recieve grooming. IF one individual in a dyad grooms alot, the other likely grooms a little. Dyads are unbalanced. Their is strong separation in varying effects which likely means something is unmodeled (or fitting issues) that structures the data.
+There is a reliable negative correlation within dyads, after accounting for generalzed tendecies of individual to give and recieve grooming. If one individual in a dyad grooms a lot, the other likely grooms a little. Dyads are unbalanced. Their is strong separation in varying effects which likely means something is unmodeled (or fitting issues) that structures the data.
 ```{r intercepts only}
+## Zero-inflated Poisson Intercepts only social relations model.
 
 #lets add exposure and make it a ZiPoisson
 m0expZI <- ulam(
     alist(
-        groomAB ~ dzipois( pAB, lambda_AB ),
-        groomBA ~ dzipois( pBA , lambda_BA ),
-        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + log(exposure_dyad_hour),
-        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + log(exposure_dyad_hour),
-        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
-        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
-        a ~ normal(1,2),
-        a_z ~ normal(0,1),
+      groomAB ~ dzipois( pAB, lambda_AB ),
+      groomBA ~ dzipois( pBA , lambda_BA ),
+      logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + log(exposure_dyad_day),
+      logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + log(exposure_dyad_day),
+      log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_day),
+      log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_day),
+      a ~ normal(3,1.1),
+      a_z ~ normal(0,1),
       vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
       Rho_gr ~ lkj_corr(4),
       sigma_gr ~ exponential(1),
@@ -404,111 +421,83 @@ m0expZI <- ulam(
        ## compute correlation matrix for dyads
       gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
+    ), data=datalist , chains=8 , cores=8 , iter=2000 , cmdstan = TRUE  )
 
 precis(m0expZI , pars=c("a", "a_z"))
 precis(m0expZI , depth=2 , pars=c( "sigma_d" ))
 precis(m0expZI , pars=c( "sigma_d" , "sigma_gr" ) , depth=3)
+precis(m0expZI , pars=c("Rho_gr" , "Rho_d") , depth=3)
+
 ```
 
-```{r}
-# <!--m0expZIa <- ulam(
-#     alist(
-#         groomAB ~ dzipois( pAB, lambda_AB ),
-#         groomBA ~ dzipois( pBA , lambda_BA ),
-#         logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d_z[dyad_id,1] + log(exposure_dyad_hour),
-#         logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d_b[dyad_id,2] + log(exposure_dyad_hour),
-#         log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
-#         log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
-#         a ~ normal(1,2),
-#         a_z ~ normal(0,1),
-#       vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
-#       Rho_gr ~ lkj_corr(4),
-#       sigma_gr ~ exponential(1),
-#        ## dyad effects choleskyfied
-#        transpars> matrix[N_dyads,2]:d <-
-#              compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
-#        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
-#        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
-#        sigma_dz ~ exponential(1),
-#        sigma_d ~ exponential(1),
-#        ## compute correlation matrix for dyads
-#       gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
-# 
-#     ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )-->
-
-precis(m0expZI , pars=c("a", "a_z" , "sigma_d" ,"sigma_dz" , "sigma_gr" , "Rho_d" , "Rho_gr") , depth=3)
-
-
-
-
+```{r , eval=FALSE}
 m0expZI1 <- ulam(
     alist(
-        groomAB ~ dzipois( pAB, lambda_AB ),
-        groomBA ~ dzipois( pBA , lambda_BA ),
-        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2]  +  log(exposure_dyad_hour),
-        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2]  + log(exposure_dyad_hour),
-        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4]  + log(exposure_dyad_hour),
-        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4]  + log(exposure_dyad_hour),
-        a ~ normal(1,2),
-        a_z ~ normal(0,1)
+      groomAB ~ dzipois( pAB, lambda_AB ),
+      groomBA ~ dzipois( pBA , lambda_BA ),
+      logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] +  log(exposure_dyad_hour),
+      logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]  + log(exposure_dyad_hour),
+      log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4]  + d[dyad_id,3] + log(exposure_dyad_hour),
+      log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4]  + d[dyad_id,4] + log(exposure_dyad_hour),
+      
+      a ~ normal(3,1.1),
+      a_z ~ normal(0,1),
       vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
       Rho_gr ~ lkj_corr(4),
-      sigma_gr ~ exponential(1)
-       ## dyad effects choleskyfied
-       # transpars> matrix[N_dyads,4]:d <-
-        #        compose_noncentered( sigma_d , L_Rho_d , zd ),
-      #  matrix[4,N_dyads]:zd ~ normal( 0 , 1 ),
-       # cholesky_factor_corr[4]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
-        #sigma_d ~ exponential(1),
-       ## compute correlation matrix for dyads
-        #gq> matrix[4,4]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+      sigma_gr ~ exponential(1),
+      
+      # dyad effects choleskyfied
+      transpars> matrix[N_dyads,4]:d <-
+        compose_noncentered( rep_vector(sigma_d,4) , L_Rho_d , zd ),
+      matrix[4,N_dyads]:zd ~ normal( 0 , 1 ),
+      cholesky_factor_corr[4]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+      sigma_d ~ exponential(1),
+      # compute correlation matrix for dyads
+      gq> matrix[4,4]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
-
-
+    ), data=datalist , chains=8 , cores=8 , iter=2000 , cmdstan = TRUE  )
+```
+This is the one we will use
+```{r}
 m0expZI2 <- ulam(
     alist(
         groomAB ~ dzipois( pAB, lambda_AB ),
         groomBA ~ dzipois( pBA , lambda_BA ),
-        logit(pAB) <- a_z + gr_z[A_id,1] + gr_z[B_id,2] + d_z[dyad_id,1]  + log(exposure_dyad_hour),
-        logit(pBA) <- a_z + gr_z[B_id,1] + gr_z[A_id,2] + d_z[dyad_id,2]  + log(exposure_dyad_hour),
-        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1]  + log(exposure_dyad_hour),
-        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]  + log(exposure_dyad_hour),
-        
-        a ~ normal(1,2),
+        logit(pAB) <- a_z + gr_z[A_id,1] + gr_z[B_id,2] + d_z[dyad_id,1]  + log(exposure_dyad_day),
+        logit(pBA) <- a_z + gr_z[B_id,1] + gr_z[A_id,2] + d_z[dyad_id,2]  + log(exposure_dyad_day),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1]  + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]  + log(exposure_dyad_day),
         a_z ~ normal(0,1),
-        
+        a ~ normal(3,1.1),
         vector[2]:gr_z[N_i] ~ multi_normal(0,Rho_gr_z,sigma_gr_z),
         Rho_gr_z ~ lkj_corr(4),
         sigma_gr_z ~ exponential(1),
-        
         vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
         Rho_gr ~ lkj_corr(4),
         sigma_gr ~ exponential(1),
-        
-       ## dyad effects choleskyfied
-       transpars> matrix[N_dyads,2]:d_z <-
-             compose_noncentered( rep_vector(sigma_d_z,2) , L_Rho_d_z , zd_z ),
-       matrix[2,N_dyads]:zd_z ~ normal( 0 , 1 ),
-       cholesky_factor_corr[2]:L_Rho_d_z ~ lkj_corr_cholesky( 4 ),
-       sigma_d_z ~ exponential(1),
-
+## dyad effects choleskyfied
+      transpars> matrix[N_dyads,2]:d_z <-
+            compose_noncentered( rep_vector(sigma_d_z,2) , L_Rho_d_z , zd_z ),
+      matrix[2,N_dyads]:zd_z ~ normal( 0 , 1 ),
+      cholesky_factor_corr[2]:L_Rho_d_z ~ lkj_corr_cholesky( 4 ),
+      sigma_d_z ~ exponential(1),
       transpars> matrix[N_dyads,2]:d <-
              compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
-       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 8 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
        sigma_d ~ exponential(1),
-       ## compute correlation matrix for dyads
+## compute correlation matrix for dyads
       gq> matrix[2,2]:Rho_d_z <<- Chol_to_Corr( L_Rho_d_z ),
       gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
-      
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  )
+    ), data=datalist , chains=8 , cores=8 , iter=3000 , cmdstan = TRUE  )
 
-precis(m0expZI2 , pars=c("Rho_d") , depth=3)
-summary(m0expZI2  )
+precis(m0expZI2 , pars=c("Rho_d_z","Rho_d") , depth=3)
+precis(m0expZI2 , pars=c("a","a_z") , depth=3 )
+precis(m0expZI2 , pars=c("Rho_gr_z","Rho_gr") , depth=3)
+```
+
 # append_row(sigma_d, sigma_g)
-
+```{r}
 m0expZI4 <- ulam(
     alist(
         groomAB ~ dzipois( pAB, lambda_AB ),
@@ -517,7 +506,7 @@ m0expZI4 <- ulam(
         logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d_z[dyad_id] + log(exposure_dyad_hour),
         log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,1]  + log(exposure_dyad_hour),
         log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,2]  + log(exposure_dyad_hour),
-        a ~ normal(1,2),
+        a ~ normal(3,1.1),
         a_z ~ normal(0,1),
       d_z[N_dyads] ~ normal(0,sigma_dz),
       vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
@@ -534,40 +523,319 @@ m0expZI4 <- ulam(
        ## compute correlation matrix for dyads
       gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  ) 
-
-m0expZI4 <- ulam(
+    ), data=datalist , chains=8 , cores=8 , iter=2000 , cmdstan = TRUE  ) 
+```
+# Visualise or describe impact of Sex
+We will start with Poisson.
+I am adding a parameter `bx_gr` for sex.
+First colum is sex effects of grooming, second is sex effects of receiving grooming. First row is effects for females, second is for males.
+```{r}
+m0exp_sex <- ulam(
     alist(
-        groomAB ~ dzipois( pAB, lambda_AB ),
-        groomBA ~ dzipois( pBA , lambda_BA ),
-        logit(pAB) <- a_z + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] + log(exposure_dyad_hour),
-        logit(pBA) <- a_z + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2] + log(exposure_dyad_hour),
-        log(lambda_AB) <- a + gr[A_id,3] + gr[B_id,4] + d[dyad_id,3]  + log(exposure_dyad_hour),
-        log(lambda_BA) <- a + gr[B_id,3] + gr[A_id,4] + d[dyad_id,4]  + log(exposure_dyad_hour),
-        a ~ normal(1,2),
-        a_z ~ normal(0,1),
-        vector[4]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        groomAB ~ poisson( lambda_AB ),
+        groomBA ~ poisson( lambda_BA ),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] 
+        + bx_gr[sex_A_index,1] + bx_gr[sex_B_index,2] + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]
+         + bx_gr[sex_B_index,1] + bx_gr[sex_A_index,2] + log(exposure_dyad_day),
+        a ~ normal(1,1.2),
+        matrix[2,2]:bx_gr ~ dnorm( 0 , 1 ), #first column is grooming effects, second is receiving effects, #row 1 is females, row 2 males
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
         Rho_gr ~ lkj_corr(4),
         sigma_gr ~ exponential(1),
        ## dyad effects choleskyfied
-      combo_sigma <- to_vector( sigma_dB , sigma_dB , sigma_dG , sigma_dG) ,
-      vector[4]:d[N_i] ~ multi_normal(0,Rho_d, combo_sigma),
-      Rho_d ~ lkj_corr(4),
-      sigma_dB ~ exponential(1),
-      sigma_dG ~ exponential(1)
-      #  transpars> matrix[N_dyads,4]:d <-
-      #        compose_noncentered( rep_row_vector(sigma_d,4), L_Rho_d , zd ),
-      #  matrix[4,N_dyads]:zd ~ normal( 0 , 1 ),
-      #  cholesky_factor_corr[4]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
-      #  sigma_d ~ exponential(1),
-      #  ## compute correlation matrix for dyads
-      # gq> matrix[4,4]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+        transpars> matrix[N_dyads,2]:d <-
+                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+        sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
 
-    ), data=datalist , chains=4 , cores=8 , iter=2000 , cmdstan = TRUE  ) 
-
-post <- extract.samples(m0expZI4)
-precis(m0expZI4 , pars=c("Rho_d" , "sigma") , depth=3)
+    ), data=datalist , chains=8 , cores=8 , iter=8000)
 ```
-# Visualise or describe impact of Sex
-# Visualise or describe impact of Age
+
+
+Lets look at the ouput.
+```{r}
+precis(m0exp_sex , depth=3 , pars=c("a" , "bx_gr" , "sigma_gr" , "sigma_d" ))
+```
+And now lets graph predictions. Unsuprisingly Poisson is poorly specified, given the high amount of zeros.
+```{r}
+#post <- extract.samples(m0exp_sex)
+dens(exp(post$a + post$bx_gr[,1,1]) , col="darkred" , ylim=c(-.12,0.9) , xlim=c(0,500) , main="Within-Dyad Grooming Rates Per Hour") #females send grooming
+dens(exp(post$a + post$bx_gr[,1,2]) , col="red" , add=TRUE) #females receive grooming
+dens(exp(post$a + post$bx_gr[,2,1]) , col="darkblue" , add=TRUE) #males send grooming
+dens(exp(post$a + post$bx_gr[,2,2]) , col="cornflowerblue" , add=TRUE) #males receive grooming
+dens( exp(rnorm( n=nrow(post$a) , mean=2 ,sd=1.5 ) ) , lty=3 , add=TRUE , adj=0.9)
+#females grooming
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.02, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkred"))
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.02, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkred"))
+#males grooming
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.05, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkblue"))
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.05, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkblue"))
+#females receiving
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.08, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("red"))
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.08, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("red"))
+#males receiving
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.11, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("cornflowerblue"))
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.11, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("cornflowerblue"))
+```
+```{r}
+
+m0ZIexp_sex <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        ## bernouli sanders likelihood
+        logit(pAB) <- a_z + gr_z[A_id,1] + gr_z[B_id,2] + d_z[dyad_id,1]
+        + bx_gr_z[sex_A_index,1] + bx_gr_z[sex_B_index,2] + log(exposure_dyad_day),
+        logit(pBA) <- a_z + gr_z[B_id,1] + gr_z[A_id,2] + d_z[dyad_id,2]
+        + bx_gr_z[sex_B_index,1] + bx_gr_z[sex_A_index,2] + log(exposure_dyad_day),
+        ## Poisson likelhood
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1]  
+        + bx_gr[sex_A_index,1] + bx_gr[sex_B_index,2] + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]
+        + bx_gr[sex_B_index,1] + bx_gr[sex_A_index,2] + log(exposure_dyad_day),
+        #fixed effects priors
+        a_z ~ normal(0,1),
+        a ~ normal(3,1.1),
+        matrix[2,2]:bx_gr_z ~ dnorm( 0 , 1 ),
+        matrix[2,2]:bx_gr ~ dnorm( 0 , 1 ),
+        #bernouli give/receive priors
+        vector[2]:gr_z[N_i] ~ multi_normal(0,Rho_gr_z,sigma_gr_z),
+        Rho_gr_z ~ lkj_corr(4),
+        sigma_gr_z ~ exponential(1),
+        #Poisson give/receive priors
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+## dyad effects choleskyfied
+     #bernouli dyad priors
+      transpars> matrix[N_dyads,2]:d_z <-
+            compose_noncentered( rep_vector(sigma_d_z,2) , L_Rho_d_z , zd_z ),
+      matrix[2,N_dyads]:zd_z ~ normal( 0 , 1 ),
+      cholesky_factor_corr[2]:L_Rho_d_z ~ lkj_corr_cholesky( 4 ),
+      sigma_d_z ~ exponential(1),
+     #Poisson dyad priors
+      transpars> matrix[N_dyads,2]:d <-
+             compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+       matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+       sigma_d ~ exponential(1),
+## compute correlation matrix for dyads in generated quantities
+      gq> matrix[2,2]:Rho_d_z <<- Chol_to_Corr( L_Rho_d_z ),
+      gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+    ), data=datalist , chains=8 , cores=8 , iter=3000 , cmdstan = TRUE  )
+
+```
+```{r}
+precis(m0ZIexp_sex , pars=c("a" , "a_z" , "bx_gr_z" , "bx_gr" , "sigma_d_z" , "sigma_gr_z" ,"sigma_d" , "sigma_gr"  ) , depth=3)
+```
+
+```{r}
+
+m1ZIexp_sex <- ulam(
+    alist(
+        groomAB ~ dzipois( pAB, lambda_AB ),
+        groomBA ~ dzipois( pBA , lambda_BA ),
+        ## bernouli sanders likelihood
+        logit(pAB) <- a_z + gr_z[A_id,1] + gr_z[B_id,2] + d_z[dyad_id,1]
+        + bx_gr_z[sex_A_index,1] + bx_gr_z[sex_B_index,2] + log(exposure_dyad_day),
+        logit(pBA) <- a_z + gr_z[B_id,1] + gr_z[A_id,2] + d_z[dyad_id,2]
+        + bx_gr_z[sex_B_index,1] + bx_gr_z[sex_A_index,2] + log(exposure_dyad_day),
+        ## Poisson likelhood
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1]  
+        + bx_gr[sex_A_index,1] + bx_gr[sex_B_index,2] + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]
+        + bx_gr[sex_B_index,1] + bx_gr[sex_A_index,2] + log(exposure_dyad_day),
+        #fixed effects priors
+        a_z ~ normal(0,1),
+        a ~ normal(3,1.1),
+        matrix[2,2]:bx_gr_z ~ dnorm( 0 , 1 ),
+        matrix[2,2]:bx_gr ~ dnorm( 0 , 1 ),
+        
+## dyad effects choleskyfied
+     #bernouli dyad priors
+      transpars> matrix[N_dyads,2]:d_z <-
+            compose_noncentered( rep_vector(sigma_d_z,2) , L_Rho_d_z , zd_z ),
+      matrix[2,N_dyads]:zd_z ~ normal( 0 , 1 ),
+      cholesky_factor_corr[2]:L_Rho_d_z ~ lkj_corr_cholesky( 4 ),
+      sigma_d_z ~ exponential(1),
+
+      transpars> matrix[N_i,2]:gr_z <-
+            compose_noncentered( rep_vector(sigma_gr_z,2) , L_Rho_gr_z , zgr_z ),
+      matrix[2,N_i]:zgr_z ~ normal( 0 , 1 ),
+      cholesky_factor_corr[2]:L_Rho_gr_z ~ lkj_corr_cholesky( 4 ),
+      sigma_gr_z ~ exponential(1),
+
+     #Poisson dyad priors
+      transpars> matrix[N_dyads,2]:d <-
+             compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+       matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+       cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 6 ),
+       sigma_d ~ exponential(1),
+
+      transpars> matrix[N_i,2]:gr <-
+            compose_noncentered( rep_vector(sigma_gr,2) , L_Rho_gr , zgr ),
+      matrix[2,N_i]:zgr ~ normal( 0 , 1 ),
+      cholesky_factor_corr[2]:L_Rho_gr ~ lkj_corr_cholesky( 6 ),
+      sigma_gr ~ exponential(1),
+
+## compute correlation matrix for dyads in generated quantities
+      gq> matrix[2,2]:Rho_d_z <<- Chol_to_Corr( L_Rho_d_z ),
+      gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d ),
+      gq> matrix[2,2]:Rho_gr_z <<- Chol_to_Corr( L_Rho_gr_z ),
+      gq> matrix[2,2]:Rho_gr <<- Chol_to_Corr( L_Rho_gr )
+    ), data=datalist , chains=8 , cores=8 , iter=3000 , cmdstan = TRUE  )
+
+```
+
+```{r}
+precis(m1ZIexp_sex , pars=c("a" , "a_z" , "bx_gr_z" , "bx_gr" ) , depth=3)
+precis(m1ZIexp_sex , pars=c( "sigma_d_z" , "sigma_gr_z" ,"sigma_d" , "sigma_gr"   ) , depth=3)
+precis(m0ZIexp_sex , pars=c("Rho_d_z", "Rho_d" , "Rho_gr_z"  ,"Rho_gr" ) , depth=3)
+
+```
+Now we shall draw samples from the posterior. to generate predictions for mean effects.
+```{r}
+post <- extract.samples(m1ZIexp_sex)
+bern_pred_sex <- cbind(1-logistic(post$a_z + post$bx_gr_z[,1,1]),
+                1-logistic(post$a_z + post$bx_gr_z[,1,2]),
+                1-logistic(post$a_z + post$bx_gr_z[,2,1]), 
+                1-logistic(post$a_z + post$bx_gr_z[,2,2])
+                )
+
+pois_pred_sex <- cbind(exp(post$a + post$bx_gr[,1,1]),
+                exp(post$a + post$bx_gr[,1,2]),
+                exp(post$a + post$bx_gr[,2,1]), 
+                exp(post$a + post$bx_gr[,2,2])
+                )
+joint_pred_sex <- bern_pred_sex*pois_pred_sex
+```
+
+We can generate predictions for mean effects from the Bernouli component of the model. The probability of observing a 1, or the probability of grooming in a day
+```{r}
+dens(bern_pred_sex[,1] , col="darkred" , ylim=c(-.12,25) , xlim=c(0,1) , xlab="probability of grooming in a day") #females send grooming
+dens(bern_pred_sex[,2], col="red" , add=TRUE , lty=2) #females receive grooming
+dens(bern_pred_sex[,3] , col="darkblue" , add=TRUE) #males send grooming
+dens(bern_pred_sex[,4] , col="cornflowerblue" , add=TRUE , lty=2) #males receive grooming
+dens( logistic(rnorm( n=nrow(post$a) , mean=0 ,sd=1 ) ) , lty=3 , add=TRUE , adj=0.9)
+```
+It looks like females and males are equally likely to receive grooming in a day ($PME_{females_r}$= {`r median(bern_pred_sex[,2])` }, 89 \% HPDI= {`r HPDI(bern_pred_sex[,2])`}; $PME_{males_r}$= {`r median(bern_pred_sex[,4]) ` }, 89 \% HPDI= {`r HPDI(bern_pred_sex[,4])` }.
+Females are more likely to groom than males ($PME_{females_g}$= {`r median(bern_pred_sex[,2])` }, 89 \% HPDI= {`r HPDI(bern_pred_sex[,2]) `}; $PME_{males_g}$= {` r median(bern_pred_sex[,3]) `}, 89 \% HPDI= {`r HPDI(bern_pred_sex[,3])` }.
+
+Now we can look at the Poisson component of the model.
+```{r}
+dens(pois_pred_sex[,1] , col="darkred" , ylim=c(0,.03) , xlim=c(0,300) , xlab="within-dyad grooming rate (mins/day), conditional on grooming occuring") #females send grooming
+dens(pois_pred_sex[,2], col="red" , add=TRUE , lty=2) #females receive grooming
+dens(pois_pred_sex[,3] , col="darkblue" , add=TRUE) #males send grooming
+dens(pois_pred_sex[,4] , col="cornflowerblue" , add=TRUE , lty=2) #males receive grooming
+dens( exp(rnorm( n=nrow(post$a) , mean=3 ,sd=1.1 ) ) , lty=3 , add=TRUE , adj=0.9) #prior
+```
+Now lets look at the joint posterior
+```{r}
+dens(joint_pred_sex[,1] , col="darkred" , ylim=c(-.007,.03) , xlim=c(0,450) , xlab="within-dyad grooming rate (mins/day)") #females send grooming
+dens(joint_pred_sex[,2], col="red" , add=TRUE , lty=2) #females receive grooming
+dens(joint_pred_sex[,3]*pois_pred_sex[,3] , col="darkblue" , add=TRUE) #males send grooming
+dens(joint_pred_sex[,4] , col="cornflowerblue" , add=TRUE , lty=2) #males receive grooming
+#females grooming
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.001, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha(alpha=0.1,"darkred"))
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.001, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha(alpha=0.1,"darkred"))
+#males grooming
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.003, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha(alpha=0.1,"darkblue"))
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.003, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha(alpha=0.1,"darkblue"))
+#females receiving
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.005, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha(alpha=0.1,"red"))
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.005, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha(alpha=0.1,"red"))
+#males receiving
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.007, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha(alpha=0.1,"cornflowerblue"))
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.007, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha(alpha=0.1,"cornflowerblue"))
+```
+
+#plot prob of not grooming
+dens(exp(post$a + post$bx_gr[,1,1]))
+
+dens(exp(post$a + post$bx_gr[,1,1]) , col="darkred" , ylim=c(-.12,0.9) , xlim=c(0,500) , main="Within-Dyad Grooming Rates Per Hour") #females send grooming
+dens(exp(post$a + post$bx_gr[,1,2]) , col="red" , add=TRUE) #females receive grooming
+dens(exp(post$a + post$bx_gr[,2,1]) , col="darkblue" , add=TRUE) #males send grooming
+dens(exp(post$a + post$bx_gr[,2,2]) , col="cornflowerblue" , add=TRUE) #males receive grooming
+dens( exp(rnorm( n=nrow(post$a) , mean=2 ,sd=1.5 ) ) , lty=3 , add=TRUE , adj=0.9)
+#females grooming
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.02, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkred"))
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.02, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkred"))
+#males grooming
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.05, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkblue"))
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.05, length(datalist$groomAB_minperday[frog]) ) , pch=1 ,col=col.alpha("darkblue"))
+#females receiving
+frog <- which(datalist$sex_B_index==1)
+points(datalist$groomAB_minperday[frog] , rep(-.08, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("red"))
+frog <- which(datalist$sex_A_index==1)
+points(datalist$groomBA_minperday[frog] , rep(-.08, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("red"))
+#males receiving
+frog <- which(datalist$sex_B_index==2)
+points(datalist$groomAB_minperday[frog] , rep(-.11, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("cornflowerblue"))
+frog <- which(datalist$sex_A_index==2)
+points(datalist$groomBA_minperday[frog] , rep(-.11, length(datalist$groomAB_minperday[frog]) ) , pch="x" ,col=col.alpha("cornflowerblue"))
+```
+
+#1 Visualise or describe impact of Age
+Individuals do not age, so we will do age as a fixed effect. 
+I will consider this independent of sex, as the prompt did not ask to interact the two.
+
+```{r}
+m0exp_age <- ulam(
+    alist(
+        groomAB ~ poisson( lambda_AB ),
+        groomBA ~ poisson( lambda_BA ),
+        log(lambda_AB) <- a + gr[A_id,1] + gr[B_id,2] + d[dyad_id,1] 
+        + ba_gr[1]*age_std_A + ba_gr[2]*age_std_B + log(exposure_dyad_day),
+        log(lambda_BA) <- a + gr[B_id,1] + gr[A_id,2] + d[dyad_id,2]
+         + ba_gr[1]*age_std_B + ba_gr[2]*age_std_A + log(exposure_dyad_day),
+        a ~ normal(0.1,2),
+        vector[2]:ba_gr ~ dnorm( 0 , 1 ), #first column is grooming effects, second is receiving effects,
+        vector[2]:gr[N_i] ~ multi_normal(0,Rho_gr,sigma_gr),
+        Rho_gr ~ lkj_corr(4),
+        sigma_gr ~ exponential(1),
+       ## dyad effects choleskyfied
+        transpars> matrix[N_dyads,2]:d <-
+                compose_noncentered( rep_vector(sigma_d,2) , L_Rho_d , zd ),
+        matrix[2,N_dyads]:zd ~ normal( 0 , 1 ),
+        cholesky_factor_corr[2]:L_Rho_d ~ lkj_corr_cholesky( 4 ),
+        sigma_d ~ exponential(1),
+       ## compute correlation matrix for dyads
+        gq> matrix[2,2]:Rho_d <<- Chol_to_Corr( L_Rho_d )
+
+    ), data=datalist ,   control = list(adapt_delta = 0.99,
+                 max_treedepth = 15), chains=6 , cores=20 , iter=8000)
+precis(m0ZIexp_age , pars=c("a" , "sigma_d" ,"sigma_gr" , "ba_gr" ), depth=2)
+```
+```{r}
+plot(datalist$groomAB~datalist$age_std_A , pch=19 , col=col.alpha("slateblue") )
+points(datalist$groomBA~datalist$age_std_B, pch=19 , col=col.alpha("slateblue"))
+```
 # Visualise or describe impact of Rank
+```{r}
+plot(datalist$groomAB~datalist$age_std_A , pch=19 , col=col.alpha("slateblue") )
+points(datalist$groomBA~datalist$age_std_B, pch=19 , col=col.alpha("slateblue"))
+```
